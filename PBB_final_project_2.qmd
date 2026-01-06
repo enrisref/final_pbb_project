@@ -1,0 +1,1832 @@
+---
+title: "World Bank World Development Indicators"
+format: dashboard
+execute:
+  python: .venv/bin/python
+  freeze: false
+resources:
+  - figs/rank_top_2005_2023.html
+  - figs/rank_bottom_2005_2023.html
+  - figs/scatterplot_fertility_GDPpercap.html
+  - figs/violin_life_expectancy_income.html
+  - figs/violin_fertility_income.html
+  - figs/infant_mortality_income.png   
+---
+
+
+
+# HOME
+## About the data
+The World Development Indicators (WDI) is the primary global database of the World Bank for monitoring and comparing development outcomes across 200 countries and over time. It is a time-series dataset which includes over 1,600 indicators, covering the economic, social, environmental, demographic, and institutional dimensions of development. 
+
+##
+##### 
+There are many economic theories explaining the correlation between country income indicators (GDP per capita, country income classification, etc.) and health-related indicators (life expectancy, fertility rate, infant mortaility rate, etc.). At the macroeconomic level are the Preston curve and Endogenous Growth theory. First, the Preston Curve (1975) illustrates the positive but concave relationship between GDP per capita and life expectancy, showing that richer countries generally live longer, but with diminishing returns: income gains matter more at lower income levels, while at higher levels, other factors like medical advances cause bigger leaps in longevity. It was also theorized and supported by reseach that the entire curve moves outward (meaning longer life expectancies for the same income), due to major improvements in public health, education and nutrition. Second, the endogenous growth theory (Lucas [1988] being one of the theorists) explains that growth is driven by human capital accumulation and that health improvements increase labor supply and innovation and increases returns to education, and in the long run, sustains economic growth. 
+
+At the microeconomic level, Grossman (1972) wrote  on the demand for health wherein, in gist, he explains that there is utility derived from being healthy and living longer. Hence, income is spent (considered as investment) in health products and services such as healthcare, medical products and services, nutrition, exercise, and education. Higher income per capita means possible higher allocation to investments in health, hence, raising life expectancy. Finally, also at the household level, Becker (1961) and Schultz (1962), theorists of human capital, explained that health is considered a component of human capital and is considered a driver of productivity and hence, in the long run, a driver of income. 
+
+
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import sys
+import wbdata
+import pandas as pd
+import country_converter as coco
+import re
+import itables
+import sys
+import yaml
+import nbformat
+import nbclient
+import ipykernel
+import numpy as np
+import plotly
+import plotly.express as px
+import plotly.graph_objects as go
+import kaleido
+import requests
+from dateutil import parser
+from tqdm import tqdm
+import scipy
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tabulate
+import mplcursors
+```
+
+# GDP per capita and life expectancy over the years
+## Row 1 {height=80%}
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+import wbdata
+import pandas as pd
+
+indicators = {
+    "SP.DYN.LE00.IN": "Life_Expectancy",
+    "SP.POP.TOTL": "Total_population",
+    "NY.GDP.PCAP.KD": "GDP_per_capita",
+    "SH.DYN.AIDS.ZS": "HIV_prev_15_49",
+    "SP.DYN.IMRT.IN": "Infant_mortality_per_1000", 
+    "SP.DYN.TFRT.IN": "Fertility_rate"
+}
+
+data = wbdata.get_dataframe(
+    indicators,
+    country="all",
+    date=("2005", "2023"),
+    parse_dates=True
+)
+
+print(data.head())
+data
+
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+dataset = data.reset_index()
+dataset["year"] = dataset["date"].dt.year
+datasets = dataset.drop(columns=["date"])
+dataset
+```
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import sys
+import country_converter as coco
+import pandas as pd  # just in case
+
+# only the official regions/continents
+valid_continents = ["Asia", "Europe", "Africa", "Oceania", "America"]
+
+# matching country name to continent
+dataset["continent"] = coco.convert(
+    names=dataset["country"],
+    to="continent",
+    not_found=None
+)
+
+# dropping groups not considered as continents
+mask_valid_cont = dataset["continent"].isin(valid_continents)
+dataset1 = dataset[mask_valid_cont].copy()
+
+dataset1_clean = dataset1.dropna(
+    subset=["GDP_per_capita", "Life_Expectancy", "Total_population"]
+).copy()
+
+
+
+```
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+
+vars_check = ["Life_Expectancy", "GDP_per_capita"]
+df_0523 = dataset1_clean.loc[
+    dataset1_clean["year"].between(2005, 2023)
+].copy()
+years_with_any_missing = (
+    df_0523
+    .assign(any_missing=df_0523[vars_check].isna().any(axis=1))
+    .groupby("year")["any_missing"]
+    .any()
+)
+complete_years = years_with_any_missing.index[~years_with_any_missing].tolist()
+complete_years
+dataset_years_complete = df_0523.loc[
+    df_0523["year"].isin(complete_years)
+].copy()
+dataset_years_complete[vars_check].isna().sum()
+all_years = set(range(2005, 2024))
+dropped_years = sorted(all_years - set(complete_years))
+dropped_years
+
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+#| out-width: "100%"
+
+import plotly.graph_objects as go
+
+
+years = list(range(2005, 2024)) 
+
+continents = (
+    dataset_years_complete["continent"]
+    .explode()
+    .dropna()
+    .unique()
+    .tolist()
+)
+
+# make the animated graph
+fig_dict = {
+    "data": [],
+    "layout": {},
+    "frames": []
+}
+
+# -------- LAYOUT --------
+fig_dict["layout"]["xaxis"] = {
+    "title": {
+        "text": "GDP per capita (constant 2015 USD, log scale)",
+        "font": {"size": 12}
+    },
+    "type": "log",
+    "tickmode": "array",
+    "tickvals": [1, 10, 100, 1_000, 10_000, 100_000],
+    "ticktext": ["1", "10", "100", "1k", "10k", "100k"],
+    "showgrid": True,
+    "gridcolor": "rgba(200,200,200,0.3)"
+}
+ 
+
+fig_dict["layout"]["yaxis"] = {
+    "title":{ 
+    "text": "Life Expectancy (years)",
+    "font": {"size": 12}
+},
+    "range": [40, 85]
+} 
+fig_dict["layout"]["hovermode"] = "closest"
+fig_dict["layout"]["title"] = {
+    "text": "GDP per Capita vs Life Expectancy, by Continent",
+    "font": {"size": 14}
+}
+fig_dict["layout"]["legend"] = {
+    "orientation": "h",
+    "xanchor": "center",
+    "x": 0.5,
+    "yanchor": "top",
+    "y": -0.3,
+    "font": {"size": 9},
+    "bgcolor": "rgba(255,255,255,0)",
+    "borderwidth": 0,
+    "itemwidth": 55,
+    "entrywidthmode": "fraction",
+    "entrywidth": 0.14
+}
+
+fig_dict["layout"]["margin"] = {"l": 60, "r": 30, "t": 60, "b": 160}  
+
+fig_dict["layout"]["updatemenus"] = [
+    {
+        "buttons": [
+            {
+                "args": [
+                    None,
+                    {
+                        "frame": {"duration": 500, "redraw": False},
+                        "fromcurrent": True,
+                        "transition": {"duration": 300, "easing": "quadratic-in-out"}
+                    }
+                ],
+                "label": "Play",
+                "method": "animate"
+            },
+            {
+                "args": [
+                    [None],
+                    {
+                        "frame": {"duration": 0, "redraw": False},
+                        "mode": "immediate",
+                        "transition": {"duration": 0}
+                    }
+                ],
+                "label": "Pause",
+                "method": "animate"
+            }
+        ],
+        "direction": "left",
+        "pad": {"r": 10, "t": 87},
+        "showactive": False,
+        "type": "buttons",
+        "x": 0.1,
+        "xanchor": "right",
+        "y": 0,
+        "yanchor": "top"
+    }
+]
+
+sliders_dict = {
+    "active": 0,
+    "yanchor": "top",
+    "xanchor": "left",
+    "currentvalue": {
+        "font": {"size": 12},
+        "prefix": "Year: ",
+        "visible": True,
+        "xanchor": "right"
+    },
+    "transition": {"duration": 300, "easing": "cubic-in-out"},
+    "pad": {"b": 10, "t": 30},   
+    "len": 0.9,
+    "x": 0.1,
+    "y": -0.05,                  
+
+    "steps": []
+}
+
+fig_dict["layout"]["updatemenus"] = [
+    {
+        "buttons": [
+            {
+                "args": [
+                    None,
+                    {
+                        "frame": {"duration": 500, "redraw": False},
+                        "fromcurrent": True,
+                        "transition": {"duration": 300, "easing": "quadratic-in-out"}
+                    }
+                ],
+                "label": "▶",
+                "method": "animate"
+            },
+            {
+                "args": [
+                    [None],
+                    {
+                        "frame": {"duration": 0, "redraw": False},
+                        "mode": "immediate",
+                        "transition": {"duration": 0}
+                    }
+                ],
+                "label": "❚❚",
+                "method": "animate"
+            }
+        ],
+        "direction": "left",
+        "showactive": False,
+        "type": "buttons",
+        "x": 0.02,
+        "xanchor": "left",
+        "y": 0.98,
+        "yanchor": "top"
+    }
+]
+
+
+
+# -------- INITIAL DATA (for first year) --------
+start_year = years[0]
+dataset_by_year = dataset_years_complete[dataset_years_complete["year"] == start_year]
+
+for continent in continents:
+    subset = dataset_by_year[
+        (dataset_by_year["continent"] == continent) &
+        (dataset_by_year["Total_population"].notna())
+    ]
+    if subset.empty:
+        continue
+
+    data_dict = {
+        "x": subset["GDP_per_capita"].tolist(),
+        "y": subset["Life_Expectancy"].tolist(),
+        "mode": "markers",
+        "text": subset["country"].tolist(),
+        "marker": {
+            "sizemode": "area",
+            "sizeref": 200000,
+            "size": subset["Total_population"].tolist()
+        },
+        "name": continent,
+        "showlegend": True 
+    }
+    fig_dict["data"].append(data_dict)
+
+# -------- FRAMES --------
+for year in years:
+    frame = {"data": [], "name": str(year)}
+    dataset_by_year = dataset_years_complete[dataset_years_complete["year"] == year]
+
+    for continent in continents:
+        subset = dataset_by_year[
+            (dataset_by_year["continent"] == continent) &
+            (dataset_by_year["Total_population"].notna())
+        ]
+        if subset.empty:
+            continue
+
+        data_dict = {
+            "x": subset["GDP_per_capita"].tolist(),
+            "y": subset["Life_Expectancy"].tolist(),
+            "mode": "markers",
+            "text": subset["country"].tolist(),
+            "marker": {
+                "sizemode": "area",
+                "sizeref": 200000,
+                "size": subset["Total_population"].tolist()
+            },
+            "name": continent,
+            "showlegend": True
+        }
+        frame["data"].append(data_dict)
+
+    fig_dict["frames"].append(frame)
+
+    slider_step = {
+        "args": [
+            [str(year)],
+            {
+                "frame": {"duration": 300, "redraw": False},
+                "mode": "immediate",
+                "transition": {"duration": 300}
+            }
+        ],
+        "label": str(year),
+        "method": "animate"
+    }
+    sliders_dict["steps"].append(slider_step)
+
+fig_dict["layout"]["sliders"] = [sliders_dict]
+
+# -------- BUILD FIGURE --------
+fig = go.Figure(fig_dict)
+fig.update_layout(uirevision=True)
+
+```
+
+
+```{python}
+fig = go.Figure(fig_dict)
+fig.show(config={"responsive": True})
+fig.write_html("WBLifeExp_GDPpercap_animation.html")
+```
+
+
+```{python}
+from pathlib import Path
+Path("figs").mkdir(exist_ok=True)
+output_path = Path("figs") / "WBLifeExp_GDPpercap_animation.html"
+fig.write_html(output_path)
+```
+
+
+## Row 2 {height= 20%}
+
+
+<span style="font-size: 16px;"> The graph only covers trends between GDP per capita and life expectancy for years 2005 to 2024. As seen in the graph, GDP per capita and life expectancy has an positive relationship. The curve is rather concave suggesting an increasing life expectancy as income increases but at a diminishing rate. However, this trend is not at all observed when you examine per continent (in the legend, you can examine a continent by deselecting the other continents). Some continents have flat lines or scattered lines. This suggests that the relationship between GDP per capita and life expectancy is not clear. For non-concave lines, they suggest that higher income does not clearly translate to increased life expectancies and vice versa.</span>
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+le_2005 = (
+    dataset_years_complete
+    .query("year == 2005")
+    .groupby("country")["Life_Expectancy"]
+    .mean()
+    .dropna()
+)
+
+le_2023 = (
+    dataset_years_complete
+    .query("year == 2023")
+    .groupby("country")["Life_Expectancy"]
+    .mean()
+    .dropna()
+)
+
+```
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+table_top0523 = pd.concat(
+    {
+        "Top 10 Life Expectancy (2005)": le_2005.sort_values(ascending=False).head(10).index.to_series().reset_index(drop=True),
+        "Top 10 Life Expectancy (2023)": le_2023.sort_values(ascending=False).head(10).index.to_series().reset_index(drop=True),
+    },
+    axis=1
+)
+
+table_bottom0523 = pd.concat(
+    {
+        "Bottom 10 Life Expectancy (2005)": le_2005.sort_values(ascending=True).head(10).index.to_series().reset_index(drop=True),
+        "Bottom 10 Life Expectancy (2023)": le_2023.sort_values(ascending=True).head(10).index.to_series().reset_index(drop=True),
+    },
+    axis=1
+)
+
+#rank
+table_top0523.insert(0, "Rank", range(1, len(table_top0523) + 1))
+table_bottom0523.insert(0, "Rank", range(1, len(table_bottom0523) + 1))
+
+overlap_2005 = set(table_top0523["Top 10 Life Expectancy (2005)"]) & set(table_bottom0523["Bottom 10 Life Expectancy (2005)"])
+overlap_2023 = set(table_top0523["Top 10 Life Expectancy (2023)"]) & set(table_bottom0523["Bottom 10 Life Expectancy (2023)"])
+
+print("Overlap 2005:", overlap_2005)
+print("Overlap 2023:", overlap_2023)
+
+overlap_2005 = set(table_top0523["Top 10 Life Expectancy (2005)"]) & set(table_bottom0523["Bottom 10 Life Expectancy (2005)"])
+overlap_2023 = set(table_top0523["Top 10 Life Expectancy (2023)"]) & set(table_bottom0523["Bottom 10 Life Expectancy (2023)"])
+
+print("Countries with life expectancy in 2005:", le_2005.shape[0])
+print("Countries with life expectancy in 2023:", le_2023.shape[0])
+
+
+           
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+from tabulate import tabulate
+
+table_top0523 = table_top0523.rename(
+    columns={
+        "top10_2005": "Top 10 Life Expectancy (2005)",
+        "top10_2023": "Top 10 Life Expectancy (2023)"
+    }
+)
+
+table_top0523
+
+table_top0523.drop(columns=table_top0523.columns[0], inplace=True)
+
+table_top0523
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+from tabulate import tabulate
+
+table_bottom0523 = table_bottom0523.rename(
+    columns={
+        "bottom10_2005": "Bottom 10 Life Expectancy (2005)",
+        "bottom10_2023": "Bottom 10 Life Expectancy (2023)"
+    }
+)
+
+table_bottom0523.drop(columns=table_bottom0523.columns[0], inplace=True)
+
+table_bottom0523
+```
+# Life Expectancy
+
+## Row 1 {.tabset height="70%"}
+
+
+### Top ranked in Life Expectancy
+
+
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+from IPython.display import HTML, display
+
+print(
+    tabulate(
+        table_top0523,
+        headers="keys",
+        tablefmt="fancy_grid",
+        showindex=False
+    )
+)
+
+display(HTML('<div style="font-size:13px; margin-top:4px;"> In this section, we rank the top 10 countries in life expectancy. As seen in this table, only 7 out of 10 countries in the top 10 for 2005 remained in 2023. This goes to show that over the years, life expectancy may improve or worsen due to a multitude of factors, one major factor being GDP per capita.</div>'))
+
+```
+
+
+
+### Bottom ranked in Life Expectancy
+
+
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+from IPython.display import HTML, display
+
+print(
+    tabulate(
+        table_bottom0523,
+        headers="keys",
+        tablefmt="fancy_grid",
+        showindex=False
+    )
+)
+
+display(HTML('<div style="font-size:13px; margin-top:4px;">In this section, we rank the bottom 10 countries in life expectancy, and compare it to two time periods (2005 and 2023). As seen in this table, only 5 out of 10 countries in the bottom 10 for 2005 remained in 2023. This goes to show that over the years, life expectancy may improve or worsen due to a multitude of factors, one major factor being GDP per capita.</div>'))
+
+```
+
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+table_top0523
+
+import pandas as pd
+
+# rank
+
+table_top0523 = table_top0523.reset_index(drop=True).assign(Rank=lambda d: d.index + 1)
+
+long_ranks = (
+    table_top0523
+    .melt(
+        id_vars="Rank",
+        value_vars=["Top 10 Life Expectancy (2005)", "Top 10 Life Expectancy (2023)"],
+        var_name="Year",
+        value_name="Country"
+    )
+    .dropna(subset=["Country"])
+)
+
+long_ranks["year"] = long_ranks["Year"].str.extract(r"(\d{4})").astype(int)
+long_ranks = long_ranks.drop(columns="Year")
+
+long_ranks
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+import plotly.graph_objects as go
+
+# keep only what we need
+plot1_df = long_ranks[["Country", "year", "Rank"]].dropna()
+
+# years
+min_year = plot1_df["year"].min()
+max_year = plot1_df["year"].max()
+
+# OPTIONAL: label only the RIGHT endpoint (keep left clean; we'll draw left labels separately)
+plot1_df["label_right"] = plot1_df.apply(
+    lambda r: r["Country"] if r["year"] == max_year else "",
+    axis=1
+)
+
+fig1 = go.Figure()
+
+for country, d in plot1_df.sort_values(["Country", "year"]).groupby("Country"):
+    # if a country appears in only one year, plot only a marker (no line)
+    mode = "lines+markers+text" if len(d) > 1 else "markers+text"
+
+    # place text on the right endpoint only
+    textpos = ["middle right" for _ in d["year"]]
+
+    fig1.add_trace(
+        go.Scatter(
+            x=d["year"],
+            y=d["Rank"],
+            mode=mode,
+            text=d["label_right"],          # <-- only right endpoint labels
+            textposition=textpos,
+            name=country,
+            showlegend=False
+        )
+    )
+
+# ---- LEFT LABEL COLUMN (the clean way) ----
+label_x = min_year - 0.6
+
+# hide default y tick labels (so you don't get a second label source)
+fig1.update_yaxes(showticklabels=False)
+
+# build left label df using ranks at the FIRST year
+left_labels = (
+    plot1_df[plot1_df["year"] == min_year]
+    .sort_values("Rank")
+)
+
+# add text-only trace on the left
+fig1.add_trace(
+    go.Scatter(
+        x=[label_x] * len(left_labels),
+        y=left_labels["Rank"],
+        text=left_labels["Country"],
+        mode="text",
+        textposition="middle right",
+        showlegend=False,
+        hoverinfo="skip",
+        cliponaxis=False
+    )
+)
+
+# layout
+fig1.update_layout(
+    title=f"Top 10 countries in terms of Life Expectancy ({min_year} and {max_year})",
+    xaxis=dict(title="Year", tickvals=[min_year, max_year]),
+    yaxis=dict(title="Rank", autorange="reversed", dtick=1),
+    autosize=True,
+    height=650,
+    margin=dict(l=180, r=260, t=60, b=60)
+)
+
+# ensure left label column is visible
+fig1.update_xaxes(range=[label_x - 0.2, max_year + 1.2])
+
+fig1.show()
+
+```
+
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+from pathlib import Path
+Path("figs").mkdir(exist_ok=True)
+
+out = Path("figs") / "rank_top_2005_2023.html"
+fig1.write_html(out, include_plotlyjs="cdn", full_html=True)
+out
+
+```
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+table_bottom0523
+
+import pandas as pd
+
+# rank
+
+table_bottom0523 = table_bottom0523.reset_index(drop=True).assign(Rank=lambda d: d.index + 1)
+
+long_ranks2 = (
+    table_bottom0523
+    .melt(
+        id_vars="Rank",
+        value_vars=["Bottom 10 Life Expectancy (2005)", "Bottom 10 Life Expectancy (2023)"],
+        var_name="Year",
+        value_name="Country"
+    )
+    .dropna(subset=["Country"])
+)
+
+long_ranks2["year"] = long_ranks2["Year"].str.extract(r"(\d{4})").astype(int)
+long_ranks2 = long_ranks2.drop(columns="Year")
+
+long_ranks2
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+
+import plotly.graph_objects as go
+
+# keep only what we need
+plot2_df = long_ranks2[["Country", "year", "Rank"]].dropna()
+
+# years
+min_year = plot2_df["year"].min()
+max_year = plot2_df["year"].max()
+
+# OPTIONAL: label only the RIGHT endpoint (keep left clean; we'll draw left labels separately)
+plot2_df["label_right"] = plot2_df.apply(
+    lambda r: r["Country"] if r["year"] == max_year else "",
+    axis=1
+)
+
+fig2 = go.Figure()
+
+for country, d in plot2_df.sort_values(["Country", "year"]).groupby("Country"):
+    # if a country appears in only one year, plot only a marker (no line)
+    mode = "lines+markers+text" if len(d) > 1 else "markers+text"
+
+    # place text on the right endpoint only
+    textpos = ["middle right" for _ in d["year"]]
+
+    fig2.add_trace(
+        go.Scatter(
+            x=d["year"],
+            y=d["Rank"],
+            mode=mode,
+            text=d["label_right"],          # <-- only right endpoint labels
+            textposition=textpos,
+            name=country,
+            showlegend=False
+        )
+    )
+
+# ---- LEFT LABEL COLUMN (the clean way) ----
+label_x = min_year - 0.6
+
+# hide default y tick labels (so you don't get a second label source)
+fig2.update_yaxes(showticklabels=False)
+
+# build left label df using ranks at the FIRST year
+left_labels = (
+    plot2_df[plot2_df["year"] == min_year]
+    .sort_values("Rank")
+)
+
+# add text-only trace on the left
+fig2.add_trace(
+    go.Scatter(
+        x=[label_x] * len(left_labels),
+        y=left_labels["Rank"],
+        text=left_labels["Country"],
+        mode="text",
+        textposition="middle right",
+        showlegend=False,
+        hoverinfo="skip",
+        cliponaxis=False
+    )
+)
+
+# layout
+fig2.update_layout(
+    title=f"Bottom 10 countries in terms of Life Expectancy ({min_year} and {max_year})",
+    xaxis=dict(title="Year", tickvals=[min_year, max_year]),
+    yaxis=dict(title="Rank", autorange="reversed", dtick=1),
+    autosize=True,
+    height=650,
+    margin=dict(l=180, r=260, t=60, b=60)
+)
+
+# ensure left label column is visible
+fig2.update_xaxes(range=[label_x - 0.2, max_year + 1.2])
+
+fig2.show()
+
+```
+
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+from pathlib import Path
+Path("figs").mkdir(exist_ok=True)
+
+out = Path("figs") / "rank_bottom_2005_2023.html"
+fig2.write_html(out, include_plotlyjs="cdn", full_html=True)
+out
+
+
+
+```
+
+
+
+
+### Change over time (top)
+
+```{=html}
+<iframe src="figs/rank_top_2005_2023.html"
+        width="100%" height="100%"
+        style="border:0;"></iframe>
+```
+
+### Change over time (bottom)
+
+```{=html}
+<iframe src="figs/rank_bottom_2005_2023.html"
+        width="100%" height="100%"
+        style="border:0;"></iframe>
+```
+
+
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import wbdata
+import pandas as pd
+
+indicators = {
+    "SP.DYN.LE00.IN": "Life_Expectancy",
+    "SP.POP.TOTL": "Total_population",
+    "NY.GDP.PCAP.KD": "GDP_per_capita",
+    "SH.DYN.AIDS.ZS": "HIV_prev_15_49",
+    "SP.DYN.IMRT.IN": "Infant_mortality_per_1000", 
+    "SP.DYN.TFRT.IN": "Fertility_rate"
+}
+
+data4 = wbdata.get_dataframe(
+    indicators,
+    country="all",
+    date=("2005", "2023"),
+    parse_dates=True
+)
+
+print(data4.head())
+data4
+
+data4 = data4.reset_index() 
+
+
+data4["year"] = data4["date"].dt.year
+dataset4 = data4.drop(columns=["date"])
+dataset4
+
+# pull WB country metadata (includes incomeLevel)
+wb_countries = wbdata.get_countries()
+
+income_map = pd.DataFrame([
+    {
+        "country": c["name"],                                # matches your dataset3["country"]
+        "income_id": c.get("incomeLevel", {}).get("id"),      # e.g., LIC, LMC, UMC, HIC
+        "income_level": c.get("incomeLevel", {}).get("value") # e.g., Low income, Lower middle income...
+    }
+    for c in wb_countries
+    if c.get("incomeLevel") and c.get("name")
+])
+
+
+dataset4 = dataset4.merge(
+    income_map,
+    on="country",
+    how="left"
+)
+
+print(dataset4[["country", "income_id", "income_level"]].drop_duplicates().head(15))
+
+
+```
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import sys
+import country_converter as coco
+import pandas as pd  # just in case
+
+# only the official regions/continents
+valid_continents = ["Asia", "Europe", "Africa", "Oceania", "America"]
+
+# matching country name to continent
+dataset4["continent"] = coco.convert(
+    names=dataset4["country"],
+    to="continent",
+    not_found=None
+)
+
+# dropping groups not considered as continents
+mask_valid_cont = dataset4["continent"].isin(valid_continents)
+dataset4 = dataset4[mask_valid_cont].copy()
+
+dataset4
+
+dataset4_clean = dataset4.query("year == 2023").dropna(
+    subset=["GDP_per_capita", "Life_Expectancy", "continent", "country"]
+).copy()
+
+dataset4_clean
+
+print(dataset4_clean.columns.tolist())
+
+dataset4_clean
+
+
+
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+LifeExp_income = dataset4_clean[
+    dataset4_clean["income_level"].notna() &
+    (dataset4_clean["income_level"] != "Not classified") &
+    dataset4_clean["Life_Expectancy"].notna()
+].copy()
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+order = ["Low income", "Lower middle income", "Upper middle income", "High income"]
+
+LifeExp_income["income_level"] = pd.Categorical(
+    LifeExp_income["income_level"],
+    categories=order,
+    ordered=True
+)
+
+LifeExp_income = LifeExp_income.sort_values("income_level")
+```
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import plotly.graph_objects as go
+
+fig5 = go.Figure()
+
+for inc in LifeExp_income["income_level"].dropna().cat.categories:
+    d = LifeExp_income.loc[
+        LifeExp_income["income_level"] == inc,
+        "Life_Expectancy"
+    ]
+    if d.empty:
+        continue
+
+    fig5.add_trace(
+        go.Violin(
+            x=[inc] * len(d),
+            y=d,
+            name=str(inc),
+            box_visible=True,
+            meanline_visible=True,
+            points="all",
+            jitter=0.25,
+            scalemode="width",
+            showlegend=False
+        )
+    )
+
+```
+
+```{python}
+
+stats = (
+    LifeExp_income
+    .groupby("income_level")["Life_Expectancy"]
+    .agg(mean="mean", sd="std", min="min", max="max", n="count")
+    .reset_index()
+)
+
+```
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+fig5.add_trace(
+    go.Scatter(
+        x=stats["income_level"].astype(str),
+        y=stats["mean"],
+        mode="markers",
+        showlegend=False
+    )
+)
+
+fig5.add_trace(
+    go.Scatter(
+        x=stats["income_level"].astype(str),
+        y=stats["mean"],
+        mode="markers",
+        error_y=dict(
+            type="data",
+            array=stats["sd"],
+            arrayminus=stats["sd"],
+            visible=True
+        ),
+        showlegend=False
+    )
+)
+
+fig5.update_layout(
+    title="Life Expectancy by Income Classification (2023)",
+    xaxis_title="Country income classification",
+    yaxis_title="Life Expectancy",
+    margin=dict(t=90),
+)
+
+fig5.show()
+
+```
+
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| include: false
+#| out-width: "100%" 
+
+from pathlib import Path
+
+Path("figs").mkdir(exist_ok=True)
+
+out = Path("figs")/ "violin_life_expectancy_income.html"
+fig5.write_html(out, include_plotlyjs="cdn", full_html=True)
+out
+
+```
+
+### by income classification
+
+```{=html}
+<iframe src="figs/violin_life_expectancy_income.html"
+        width="100%" height="100%"
+        style="border:0;"></iframe>
+
+```
+<div style="font-size:13px; margin-top:4px;"> In this section, we examine the minimum, maximum, mean, and standard deviation in life expectancy when categorized according to income classifications for the year 2023. </div>'
+
+
+
+
+
+
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import wbdata
+import pandas as pd
+
+indicators = {
+    "SP.DYN.LE00.IN": "Life_Expectancy",
+    "SP.POP.TOTL": "Total_population",
+    "NY.GDP.PCAP.KD": "GDP_per_capita",
+    "SH.DYN.AIDS.ZS": "HIV_prev_15_49",
+    "SP.DYN.IMRT.IN": "Infant_mortality_per_1000", 
+    "SP.DYN.TFRT.IN": "Fertility_rate"
+}
+
+data2 = wbdata.get_dataframe(
+    indicators,
+    country="all",
+    date=("2005", "2023"),
+    parse_dates=True
+)
+
+print(data2.head())
+data2
+
+data2 = data2.reset_index()   # brings country/date back as columns
+
+
+data2["year"] = data2["date"].dt.year
+dataset2 = data2.drop(columns=["date"])
+dataset2
+
+
+
+```
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import sys
+import country_converter as coco
+import pandas as pd  # just in case
+
+# only the official regions/continents
+valid_continents = ["Asia", "Europe", "Africa", "Oceania", "America"]
+
+# matching country name to continent
+dataset2["continent"] = coco.convert(
+    names=dataset2["country"],
+    to="continent",
+    not_found=None
+)
+
+# dropping groups not considered as continents
+mask_valid_cont = dataset2["continent"].isin(valid_continents)
+dataset2 = dataset2[mask_valid_cont].copy()
+
+dataset2
+
+dataset2_clean = dataset2.query("year == 2023").dropna(
+    subset=["GDP_per_capita", "Fertility_rate", "continent", "country"]
+).copy()
+
+dataset2_clean
+
+print(dataset2_clean.columns.tolist())
+
+
+
+```
+
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+#| out-width: "100%"
+
+import plotly.express as px
+
+fig3 = px.scatter(
+    dataset2_clean,
+    x="GDP_per_capita",
+    y="Fertility_rate",
+    facet_col="continent",
+    facet_col_wrap=3,
+    color="continent",
+    hover_name="country",
+    log_x=True,
+    opacity=0.65,
+    labels={
+        "GDP_per_capita": "GDP per capita (constant 2015 USD, log scale)",
+        "Fertility_rate": "Fertility rate (births per woman)",
+        "continent": "Continent"
+    },
+    title="GDP per Capita vs Fertility Rate by Continent (2023)"
+)
+
+
+fig3.update_layout(
+    title=dict(
+        y=0.98,
+        x=0.5,
+        xanchor="center",
+        yanchor="top"
+    ),
+    legend=dict(
+        title_text="",
+        orientation="h",
+        x=0.5,
+        y=-0.22,
+        xanchor="center",
+        yanchor="top",
+        font={"size": 9},
+        entrywidth=0.14,
+        entrywidthmode="fraction"
+    ),
+    margin=dict(t=120, b=130, r=30, l=60),
+    font=dict(size=9)  # global font size
+)
+
+fig3.update_xaxes(
+    title_text="GDP per capita (constant 2015 USD, log scale)",
+    title_font_size=10,
+    tickmode="array",
+    tickvals=[1, 10, 100, 1_000, 10_000, 100_000],
+    ticktext=["1", "10", "100", "1k", "10k", "100k"],
+    showgrid=True,
+    gridcolor="rgba(200,200,200,0.3)"
+)
+
+fig3.update_yaxes(
+    title_text="Fertility rate",
+    title_font_size=9,
+    showgrid=True,
+    gridcolor="rgba(200,200,200,0.3)"
+)
+
+
+fig3.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+
+fig3.show()
+
+
+
+
+```
+
+# Fertility Rate
+
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| include: false
+#| out-width: "100%" 
+
+from pathlib import Path
+
+Path("figs").mkdir(exist_ok=True)
+
+out = Path("figs")/ "scatterplot_fertility_GDPpercap.html"
+fig3.write_html(out, include_plotlyjs="cdn", full_html=True)
+out
+
+```
+
+## Row 1 {.tabset height=70%}
+
+### GDP per capita and Fertility rate across continents
+
+```{=html}
+<iframe src="figs/scatterplot_fertility_GDPpercap.html"
+        width="100%" height="100%"
+        style="border:0;"></iframe>
+
+```
+<div style="font-size:13px; margin-top:4px;"> In this section, we examine the trend between fertility rate and GDP per capita faceted across the continents for year 2023. As seen in the graph, there is a negative relationship between fertility rate and GDP per capita; as GDP per capita increases, the fertility rate is lower.  However, across the continents, one can see variations in terms of the steepness of the line. For example, in Europe, the line is very flat, meaning fertility rate remains low in spite of increase in GDP per capita. On the other hand, in Africa, it is very steep, meaning a faster response of the fertility rate to decline  as GDP per capita increases.  </div>'
+
+
+
+
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import wbdata
+import pandas as pd
+
+indicators = {
+    "SP.DYN.LE00.IN": "Life_Expectancy",
+    "SP.POP.TOTL": "Total_population",
+    "NY.GDP.PCAP.KD": "GDP_per_capita",
+    "SH.DYN.AIDS.ZS": "HIV_prev_15_49",
+    "SP.DYN.IMRT.IN": "Infant_mortality_per_1000", 
+    "SP.DYN.TFRT.IN": "Fertility_rate"
+}
+
+data3 = wbdata.get_dataframe(
+    indicators,
+    country="all",
+    date=("2005", "2023"),
+    parse_dates=True
+)
+
+print(data3.head())
+data3
+
+data3 = data3.reset_index() 
+
+
+data3["year"] = data3["date"].dt.year
+dataset3 = data3.drop(columns=["date"])
+dataset3
+
+# pull WB country metadata (includes incomeLevel)
+wb_countries = wbdata.get_countries()
+
+income_map = pd.DataFrame([
+    {
+        "country": c["name"],                                # matches your dataset3["country"]
+        "income_id": c.get("incomeLevel", {}).get("id"),      # e.g., LIC, LMC, UMC, HIC
+        "income_level": c.get("incomeLevel", {}).get("value") # e.g., Low income, Lower middle income...
+    }
+    for c in wb_countries
+    if c.get("incomeLevel") and c.get("name")
+])
+
+
+dataset3 = dataset3.merge(
+    income_map,
+    on="country",
+    how="left"
+)
+
+print(dataset3[["country", "income_id", "income_level"]].drop_duplicates().head(15))
+
+
+```
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import sys
+import country_converter as coco
+import pandas as pd  # just in case
+
+# only the official regions/continents
+valid_continents = ["Asia", "Europe", "Africa", "Oceania", "America"]
+
+# matching country name to continent
+dataset3["continent"] = coco.convert(
+    names=dataset3["country"],
+    to="continent",
+    not_found=None
+)
+
+# dropping groups not considered as continents
+mask_valid_cont = dataset3["continent"].isin(valid_continents)
+dataset3 = dataset3[mask_valid_cont].copy()
+
+dataset3
+
+dataset3_clean = dataset3.query("year == 2023").dropna(
+    subset=["GDP_per_capita", "Fertility_rate", "continent", "country"]
+).copy()
+
+dataset3_clean
+
+print(dataset3_clean.columns.tolist())
+
+dataset3_clean
+
+
+
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+fertility_GDPpercap = dataset3_clean[
+    dataset3_clean["income_level"].notna() &
+    (dataset3_clean["income_level"] != "Not classified") &
+    dataset3_clean["Fertility_rate"].notna()
+].copy()
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+order = ["Low income", "Lower middle income", "Upper middle income", "High income"]
+
+fertility_GDPpercap["income_level"] = pd.Categorical(
+    fertility_GDPpercap["income_level"],
+    categories=order,
+    ordered=True
+)
+
+fertility_GDPpercap = fertility_GDPpercap.sort_values("income_level")
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import plotly.graph_objects as go
+
+fig4 = go.Figure()
+
+for inc in fertility_GDPpercap["income_level"].dropna().cat.categories:
+    d = fertility_GDPpercap.loc[
+        fertility_GDPpercap["income_level"] == inc,
+        "Fertility_rate"
+    ]
+    if d.empty:
+        continue
+
+    fig4.add_trace(
+        go.Violin(
+            x=[inc] * len(d),
+            y=d,
+            name=str(inc),
+            box_visible=True,
+            meanline_visible=True,
+            points="all",
+            jitter=0.25,
+            scalemode="width",
+            showlegend=False
+        )
+    )
+
+```
+
+```{python}
+
+stats = (
+    fertility_GDPpercap
+    .groupby("income_level")["Fertility_rate"]
+    .agg(mean="mean", sd="std", min="min", max="max", n="count")
+    .reset_index()
+)
+
+```
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+fig4.add_trace(
+    go.Scatter(
+        x=stats["income_level"].astype(str),
+        y=stats["mean"],
+        mode="markers",
+        showlegend=False
+    )
+)
+
+fig4.add_trace(
+    go.Scatter(
+        x=stats["income_level"].astype(str),
+        y=stats["mean"],
+        mode="markers",
+        error_y=dict(
+            type="data",
+            array=stats["sd"],
+            arrayminus=stats["sd"],
+            visible=True
+        ),
+        showlegend=False
+    )
+)
+
+fig4.update_layout(
+    title="Fertility Rate Distribution by Income Classification (2023)",
+    xaxis_title="Country income classification",
+    yaxis_title="Fertility rate (births per woman)",
+    margin=dict(t=90),
+)
+
+fig4.show()
+
+```
+
+### Fertility rate across country income classifications
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| include: false
+#| out-width: "100%" 
+
+from pathlib import Path
+
+Path("figs").mkdir(exist_ok=True)
+
+out = Path("figs")/ "violin_fertility_income.html"
+fig4.write_html(out, include_plotlyjs="cdn", full_html=True)
+out
+
+```
+
+```{=html}
+<iframe src="figs/violin_fertility_income.html"
+        width="100%" height="100%"
+        style="border:0;"></iframe>
+
+```
+<div style="font-size:13px; margin-top:4px;"> In this section, we examine the minimum, maximum, mean, and standard deviation in fertility rate when categorized according to income classifications for the year 2023. As seen in the graph, low income countries have a higher average fertility rate, and there is significant variation within the income group, with the mean above 4 births. Lower middle income countries have lower average fertility rate (3 births) but still significant variation in fertility rate within income group. Upper middle income have, again much lower average fertility rate (2 births). Finally, high income countries have lower standard deviation and lower mean fertility rate (1.5 births). </div>'
+
+
+
+
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import wbdata
+import pandas as pd
+
+indicators = {
+    "SP.DYN.LE00.IN": "Life_Expectancy",
+    "SP.POP.TOTL": "Total_population",
+    "NY.GDP.PCAP.KD": "GDP_per_capita",
+    "SH.DYN.AIDS.ZS": "HIV_prev_15_49",
+    "SP.DYN.IMRT.IN": "Infant_mortality_per_1000", 
+    "SP.DYN.TFRT.IN": "Fertility_rate"
+}
+
+data5 = wbdata.get_dataframe(
+    indicators,
+    country="all",
+    date=("2005", "2023"),
+    parse_dates=True
+)
+
+print(data5.head())
+data5
+
+data5 = data5.reset_index() 
+
+
+data5["year"] = data5["date"].dt.year
+dataset5 = data5.drop(columns=["date"])
+dataset5
+
+# pull WB country metadata (includes incomeLevel)
+wb_countries = wbdata.get_countries()
+
+income_map = pd.DataFrame([
+    {
+        "country": c["name"],                                # matches your dataset3["country"]
+        "income_id": c.get("incomeLevel", {}).get("id"),      # e.g., LIC, LMC, UMC, HIC
+        "income_level": c.get("incomeLevel", {}).get("value") # e.g., Low income, Lower middle income...
+    }
+    for c in wb_countries
+    if c.get("incomeLevel") and c.get("name")
+])
+
+
+dataset5 = dataset5.merge(
+    income_map,
+    on="country",
+    how="left"
+)
+
+print(dataset5[["country", "income_id", "income_level"]].drop_duplicates().head(15))
+
+
+```
+
+```{python}
+
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+import sys
+import country_converter as coco
+import pandas as pd  # just in case
+
+# only the official regions/continents
+valid_continents = ["Asia", "Europe", "Africa", "Oceania", "America"]
+
+# matching country name to continent
+dataset5["continent"] = coco.convert(
+    names=dataset5["country"],
+    to="continent",
+    not_found=None
+)
+
+# dropping groups not considered as continents
+mask_valid_cont = dataset5["continent"].isin(valid_continents)
+dataset5 = dataset5[mask_valid_cont].copy()
+
+dataset5
+
+dataset5_clean = dataset5.query("year == 2023").dropna(
+    subset=["GDP_per_capita", "Fertility_rate", "continent", "country"]
+).copy()
+
+dataset5_clean
+
+print(dataset5_clean.columns.tolist())
+
+dataset5_clean
+
+
+
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+infantmortality_income = dataset5_clean[
+    dataset5_clean["income_level"].notna() &
+    (dataset5_clean["income_level"] != "Not classified") &
+    dataset5_clean["Infant_mortality_per_1000"].notna()
+].copy()
+
+```
+
+
+```{python}
+#| include: false
+#| echo: false
+#| warning: false
+#| message: false
+order = ["Low income", "Lower middle income", "Upper middle income", "High income"]
+
+infantmortality_income["income_level"] = pd.Categorical(
+    infantmortality_income["income_level"],
+    categories=order,
+    ordered=True
+)
+
+infantmortality_income = infantmortality_income.sort_values("income_level")
+
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| include: false
+import pandas as pd
+
+avg_mortality = (
+    infantmortality_income
+    .dropna(subset=["income_level", "Infant_mortality_per_1000"])
+    .groupby("income_level", as_index=False)
+    .agg(avg_mortality_rate=("Infant_mortality_per_1000", "mean"))
+)
+
+order = ["Low income", "Lower middle income", "Upper middle income", "High income"]
+
+avg_mortality["income_level"] = pd.Categorical(
+    avg_mortality["income_level"], categories=order, ordered=True
+)
+
+avg_mortality = avg_mortality.sort_values("income_level")
+
+
+```
+
+
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| include: false
+import seaborn as sns
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import matplotlib.font_manager as fm
+
+# optional: custom font
+# font_path = "/System/Library/Fonts/Supplemental/Arial.ttf"
+# font_prop = fm.FontProperties(fname=font_path)
+# mpl.rcParams["font.family"] = font_prop.get_name()
+
+sns.set_theme(style="whitegrid", font="DejaVu Sans", font_scale=1.1)
+
+mpl.rcParams.update({
+    "axes.titlesize": 12,
+    "axes.labelsize": 11,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+})
+
+sns.set_theme(style="whitegrid")
+
+fig, ax = plt.subplots(figsize=(8, 5))
+
+
+ax = sns.barplot(
+    data=avg_mortality,
+    x="income_level",
+    y="avg_mortality_rate",
+    hue="income_level",
+    palette="pastel",
+    legend=False,
+    ax=ax
+)
+
+# add value labels on top of bars
+for c in ax.containers:
+    ax.bar_label(c, fmt="%.2f", padding=3)   # change decimals if needed
+
+ax.set_title("Average Infant Mortality Rate by Income Group")
+ax.set_xlabel("Income Group")
+ax.set_ylabel("Average Infant Mortality Rate per 1000 live births")
+plt.xticks(rotation=15)
+plt.tight_layout()
+
+
+plt.show()
+plt.savefig("infant_mortality_income.png")
+
+
+
+```
+
+```{python}
+#| echo: false
+#| warning: false
+#| message: false
+#| include: false
+#| out-width: "100%" 
+
+from pathlib import Path
+
+Path("figs").mkdir(exist_ok=True)
+
+
+out = Path("figs") / "infant_mortality_income.png"
+fig.savefig(out, dpi=200, bbox_inches="tight")  # NOTE: fig.savefig, not plt.savefig
+print(out, out.exists())
+
+
+```
+
+# Infant mortality rate
+##
+
+
+<img src="figs/infant_mortality_income.png"
+     style="display:block; margin-left:auto; margin-right:auto; width:100%; max-width:800px; height:auto;">
+
+
+
+
+<div style="font-size:15px; margin-top:4px;"> In this section, we examine the average infant mortality rate when categorized according to income classifications for the year 2023. Infant mortality rate is the number of infants who die before reaching age 1, per 1000 live births in a given year. As seen in the graph, low income countries have a higher average infant mortality rate, at 46 per 1000 live births. it is a stark contrast to the infant mortality rate in high income countries, at 5 per 1000 live births. These numbers suggest weak health systems and living conditions in countries with lower income classification. </div>'
+
+
+
